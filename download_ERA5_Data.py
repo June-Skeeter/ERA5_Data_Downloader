@@ -1,14 +1,16 @@
 from dataclasses import dataclass, field
 from urllib import request
 import geopandas as gpd
-import rioxarray
 import xarray as xr
 import pandas as pd
 import numpy as np
+import rioxarray
 import cdsapi
 import shutil
+import uuid
 import yaml
 import time
+import json
 import sys
 import os
 
@@ -310,9 +312,32 @@ class session():
     dataset: str
     variables: list
     data_format: str = 'netcdf'
+    longterm_Storage: str = None
+    logPath: str = field(default=None,init=False)
 
     def __post_init__(self):
-        badVar = [v for v in self.variables if v not in Available_Variables[self.dataset] ]
+        root = os.path.join(os.path.split(__file__)[0],'tempData')
+        if not os.path.isdir(root):
+            os.makedirs(root)
+        self.tempzip = os.path.join(os.path.split(__file__)[0],'tempData','download.zip')
+        if self.longterm_Storage is None:
+            self.ncOut = os.path.join(os.path.split(__file__)[0],'tempData','request')
+        else:
+            self.ncOut = os.path.join(self.longterm_Storage,'request')
+
+        if self.longterm_Storage is None:
+            input('Proceed without storing request?')
+        elif not os.path.isdir(self.longterm_Storage):
+            sys.exit(f'Path does not exist: {self.longterm_Storage}')
+        else:
+            self.logPath = os.path.join(self.longterm_Storage,'request.log')
+            if os.path.isfile(self.logPath):
+                with open(self.logPath) as f:
+                    self.log = json.load(f)
+            else:
+                self.log = {}
+
+        badVar = [v for v in self.variables if v not in Available_Variables[self.dataset]]
         if len(badVar):
             sys.exit(f"Invalid variable selections for {self.dataset}: {badVar}")
         if not os.path.isfile('cdsapi.rc'):
@@ -324,9 +349,29 @@ class session():
             key=apikey['key']
         )
 
+    def submitRequest(self,request):
+        request_id = str(uuid.uuid5(uuid.NAMESPACE_DNS,str(request)))
+        if request_id in self.log:
+            print('Request already complete, skipping download')
+        else:
+            self.log[request_id] = request
+            self.downloadSave(request_id,request)
+            if self.logPath is not None:
+                with open(self.logPath, 'w+') as f:
+                    json.dump(self.log,f)
+        return(str(request_id))
+
+    def downloadSave(self,name,request):
+        # for d,request in self.request.items():
+        print(f'Downloading {name}')
+        self.client.retrieve(self.dataset, request, self.tempzip)
+        shutil.unpack_archive(self.tempzip,self.ncOut.replace('request',name))
+        os.remove(self.tempzip)
+
+
 @dataclass(kw_only=True)
 class getERA5_atPoint(session):
-    outputFile: str = None
+    longterm_Storage: str = None
     latitude: float
     longitude: float
     startDate: str
@@ -348,67 +393,65 @@ class getERA5_atPoint(session):
 
     def __post_init__(self):
         super().__post_init__()
-        self.request = {
+        request = {
             'variable':self.variables,
             'location':{'longitude':self.longitude,'latitude':self.latitude},
             'date':[f"{self.startDate}/{self.stopDate}"],
             'data_format':self.data_format
         }
-
-        tmpzip = os.path.join(os.path.split(__file__)[0],'tempData','download.zip')
-        tmpout = os.path.join(os.path.split(__file__)[0],'tempData','download')
-        self.client.retrieve(self.dataset,self.request,tmpzip)
-        shutil.unpack_archive(tmpzip,tmpout)
-        self.ERA5_time_series = pd.concat([xr.open_dataset(os.path.join(tmpout,f)).to_dataframe().set_index(['latitude','longitude'],append=True) for f in os.listdir(tmpout)],axis=1)
-        os.remove(tmpzip)
-        shutil.rmtree(tmpout)
-        self.ERA5_time_series = self.ERA5_time_series.sort_index(level=0)
-        breakpoint()
-        if self.outputFile is not None:
-            self.ERA5_time_series.to_csv(self.outputFile)
+        request_id = self.submitRequest(request)
+        tmp = self.ncOut.replace('request',request_id)
+        self.time_series = []
+        for f in os.listdir(tmp):
+            ds = xr.open_dataset(os.path.join(tmp,f))
+            ts = ds.to_dataframe()
+            # Only runs for one point at a time, so this is fine
+            xy = ts.groupby(['latitude','longitude']).count().index.values[0]
+            ts = ts[[v for v in ds.data_vars]].copy()
+            ts.columns = pd.MultiIndex.from_tuples([
+                (f"{xy[0]},{xy[1]}",varName,ds[varName].units,str(ds['t2m'].dtype),ds[varName].long_name)
+                for varName in ds.data_vars
+            ])
+            self.time_series.append(ts)
+        self.time_series = pd.concat(self.time_series).sort_index()
 
 
 @dataclass(kw_only=True)
 class getERA5_area(session):
-    outputFolder: str = None
     area: list = None
     startDate: str
     stopDate: str
     dataset: str = 'reanalysis-era5-single-levels'
     variables: list = field(default_factory=lambda:[
-        "10m_u_component_of_wind",
-        "10m_v_component_of_wind",
-        "2m_dewpoint_temperature",
+        # "10m_u_component_of_wind",
+        # "10m_v_component_of_wind",
+        # "2m_dewpoint_temperature",
         "2m_temperature",
-        "surface_pressure",
-        "total_precipitation",
-        "surface_net_solar_radiation",
-        "surface_net_thermal_radiation",
-        "surface_sensible_heat_flux",
-        "surface_latent_heat_flux",
-        "surface_solar_radiation_downwards",
-        "surface_thermal_radiation_downwards",
-        "snow_depth",
-        "snowfall",
-        "soil_temperature_level_1",
-        "volumetric_soil_water_layer_1",
-        "boundary_layer_height"
+        # "surface_pressure",
+        # "total_precipitation",
+        # "surface_net_solar_radiation",
+        # "surface_net_thermal_radiation",
+        # "surface_sensible_heat_flux",
+        # "surface_latent_heat_flux",
+        # "surface_solar_radiation_downwards",
+        # "surface_thermal_radiation_downwards",
+        # "snow_depth",
+        # "snowfall",
+        # "soil_temperature_level_1",
+        # "volumetric_soil_water_layer_1",
+        # "boundary_layer_height"
     ])
     WGS: str = field(default="EPSG:4326",init=False)
     UTM: str = field(default=None,init=False)
     Points: gpd.GeoDataFrame = field(default=None,init=False)
 
     def __post_init__(self):
-        root = os.path.join(os.path.split(__file__)[0],'tempData')
-        if not os.path.isdir(root):
-            os.makedirs(root)
-        self.tempzip = os.path.join(os.path.split(__file__)[0],'tempData','download.zip')
-        self.tempnc = os.path.join(os.path.split(__file__)[0],'tempData','ncFiles')
+        self.requests = []
+        
         super().__post_init__()
-        self.request = {}
+        # self.request = {}
         for d in pd.date_range(self.startDate,self.stopDate,freq='MS'):
-
-            self.request[d] = {
+            request = {
                 "product_type": ["reanalysis"],
                 'variable':self.variables,
                 'year':[str(d.year)],
@@ -440,18 +483,9 @@ class getERA5_area(session):
                 'download_format':'zip'
             }
             if self.area is not None:
-                self.request[d] = self.request[d] | {'area':self.area}
-            if self.Points is None:
-                self.downloadSave(d.strftime('%Y-%m-%d'),request)
-                shutil.copytree(self.tempnc,self.outputFolder)
-                shutil.rmtree(self.tempnc)
-
-    def downloadSave(self,name,request):
-        # for d,request in self.request.items():
-        print(f'Downloading {name}')
-        self.client.retrieve(self.dataset, request, self.tempzip)
-        shutil.unpack_archive(self.tempzip,self.tempnc)
-        os.remove(self.tempzip)
+                request = request | {'area':self.area}
+            request_id = self.submitRequest(request)
+            self.requests.append(request_id)
 
 
 
@@ -499,16 +533,16 @@ class getERA5_IDW_at_points(getERA5_area):
         # Reformat area expectation by api
         self.area = [round(float(self.area[-1]),3)]+[round(float(a),3) for a in self.area[0:3]]
         super().__post_init__()
-        breakpoint()
         point_var = []
         T0 = time.time()
-        for d, request in self.request.items():
+        for request_id in self.requests:
             point_var.append([])
             T1 = time.time()
-            self.downloadSave(d,request)
+            # self.downloadSave(d,request)
             print('Completed in :',time.time()-T1)
-            for dsname in os.listdir(self.tempnc):
-                dsname = os.path.join(self.tempnc,dsname)
+            tmp = self.ncOut.replace('request',request_id)
+            for dsname in os.listdir(tmp):
+                dsname = os.path.join(tmp,dsname)
                 ds = xr.open_dataset(dsname)
                 ds.rio.write_crs(self.WGS,inplace=True)
                 ds = ds.rio.reproject(self.UTM)
@@ -518,7 +552,7 @@ class getERA5_IDW_at_points(getERA5_area):
                 point_var[-1].append(
                     pd.concat([pd.DataFrame(
                     index=timestamp,
-                    columns=[f"{varName}_{id}" for id in self.Points.index],
+                    columns=pd.MultiIndex.from_tuples([(id,varName,ds[varName].units,str(ds['t2m'].dtype),ds[varName].long_name) for id in self.Points.index]),
                     # For each variable, do IDW on all timesteps (masking for nan values)
                     data=np.array([
                         simple_idw(x,y,ds[varName].values[i].flatten(),self.Points.geometry.x,self.Points.geometry.y)
@@ -526,10 +560,6 @@ class getERA5_IDW_at_points(getERA5_area):
                     ) for varName in ds.data_vars],axis=1)
                     )
             point_var[-1] = pd.concat(point_var[-1],axis=1)
-            shutil.rmtree(self.tempnc)
         print('Full time: ',time.time()-T0)
-        point_var = pd.concat(point_var)
-        if not os.path.isdir(self.outputFolder):
-            os.makedirs(self.outputFolder)
-        point_var.to_csv(os.path.join(self.outputFolder,'test.csv'))
+        self.time_series = pd.concat(point_var)
 
