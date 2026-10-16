@@ -8,3 +8,7 @@ Then create a file called cdsapi.rc including the two lines below and save it in
 url: https://cds.climate.copernicus.eu/api
 key: **YOUR-API-KEY-HERE**
 `
+
+## TO DO:
+
+Add log, determine units cache .zip files?
