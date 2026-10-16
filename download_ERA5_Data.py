@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from urllib import request
 import geopandas as gpd
 import rioxarray
 import xarray as xr
@@ -7,6 +8,7 @@ import numpy as np
 import cdsapi
 import shutil
 import yaml
+import time
 import sys
 import os
 
@@ -366,34 +368,9 @@ class getERA5_atPoint(session):
             self.ERA5_time_series.to_csv(self.outputFile)
 
 
-def distance_matrix(x0, y0, x1, y1):
-    obs = np.vstack((x0, y0)).T
-    interp = np.vstack((x1, y1)).T
-
-    # Make a distance matrix between pairwise observations
-    # Note: from <http://stackoverflow.com/questions/1871536>
-    # (Yay for ufuncs!)
-    d0 = np.subtract.outer(obs[:,0], interp[:,0])
-    d1 = np.subtract.outer(obs[:,1], interp[:,1])
-
-    return np.hypot(d0, d1)
-
-def simple_idw(x, y, z, xi, yi):
-    dist = distance_matrix(x,y, xi,yi)
-    # In IDW, weights are 1 / distance
-    weights = 1.0 / dist
-
-    # Make weights sum to one
-    weights /= weights.sum(axis=0)
-
-    # Multiply the weights for each interpolated point by all observed Z-values
-    zi = np.dot(weights.T, z)
-    return zi
-
-
 @dataclass(kw_only=True)
 class getERA5_area(session):
-    outputFile: str = None
+    outputFolder: str = None
     area: list = None
     startDate: str
     stopDate: str
@@ -423,6 +400,11 @@ class getERA5_area(session):
     Points: gpd.GeoDataFrame = field(default=None,init=False)
 
     def __post_init__(self):
+        root = os.path.join(os.path.split(__file__)[0],'tempData')
+        if not os.path.isdir(root):
+            os.makedirs(root)
+        self.tempzip = os.path.join(os.path.split(__file__)[0],'tempData','download.zip')
+        self.tempnc = os.path.join(os.path.split(__file__)[0],'tempData','ncFiles')
         super().__post_init__()
         self.request = {}
         for d in pd.date_range(self.startDate,self.stopDate):
@@ -431,8 +413,21 @@ class getERA5_area(session):
                 "product_type": ["reanalysis"],
                 'variable':self.variables,
                 'year':[str(d.year)],
-                'month':[str(d.month)],
-                'day':[str(d.day)],
+                'month':[str(d.month).zfill(2)],
+                'day':[str(d.day).zfill(2)],
+                # "day": [
+                #     "01", "02", "03",
+                #     "04", "05", "06",
+                #     "07", "08", "09",
+                #     "10", "11", "12",
+                #     "13", "14", "15",
+                #     "16", "17", "18",
+                #     "19", "20", "21",
+                #     "22", "23", "24",
+                #     "25", "26", "27",
+                #     "28", "29", "30",
+                #     "31"
+                # ],
                 "time": [
                     "00:00", "01:00", "02:00",
                     "03:00", "04:00", "05:00",
@@ -449,39 +444,93 @@ class getERA5_area(session):
             if self.area is not None:
                 self.request[d] = self.request[d] | {'area':self.area}
             if self.Points is None:
-                self.downloadSave()
+                self.downloadSave(d.strftime('%Y-%m-%d'),request)
+                shutil.copytree(self.tempnc,self.outputFolder)
+                shutil.rmtree(self.tempnc)
 
-    def downloadSave(self):
-        for d,request in self.request.items():
-            print(f'Downloading {d.strftime('%Y-%m-%d')}')
+    def downloadSave(self,name,request):
+        # for d,request in self.request.items():
+        print(f'Downloading {name}')
+        self.client.retrieve(self.dataset, request, self.tempzip)
+        shutil.unpack_archive(self.tempzip,self.tempnc)
+        os.remove(self.tempzip)
 
-            tmpzip = os.path.join(os.path.split(__file__)[0],'tempData','download.zip')
-            tmpout = os.path.join(os.path.split(__file__)[0],'tempData','download')
-            # self.client.retrieve(self.dataset, self.request[d],tmpzip)
-            shutil.unpack_archive(tmpzip,tmpout)
-            ds = xr.open_dataset('tempData/download/data_stream-oper_stepType-accum.nc')
-            ds.rio.write_crs(self.WGS,inplace=True)
-            # if 
-            ds = ds.rio.reproject(f"EPSG:{utm}")
 
-            breakpoint()
-            # os.remove(tmpzip)
-            # shutil.rmtree(tmpout)
-            # sys.exit()
+
+def distance_matrix(x0, y0, x1, y1):
+    obs = np.vstack((x0, y0)).T
+    interp = np.vstack((x1, y1)).T
+
+    # Make a distance matrix between pairwise observations
+    # Note: from <http://stackoverflow.com/questions/1871536>
+    # (Yay for ufuncs!)
+    d0 = np.subtract.outer(obs[:,0], interp[:,0])
+    d1 = np.subtract.outer(obs[:,1], interp[:,1])
+
+    return np.hypot(d0, d1)
+
+def simple_idw(x, y, z, xi, yi):
+    mask = ~np.isnan(z)
+    x = x[mask]
+    y = y[mask]
+    z = z[mask]
+    dist = distance_matrix(x,y, xi,yi)
+    # In IDW, weights are 1 / distance
+    weights = 1.0 / dist
+
+    # Make weights sum to one
+    weights /= weights.sum(axis=0)
+
+    # Multiply the weights for each interpolated point by all observed Z-values
+    zi = np.dot(weights.T, z)
+    return zi
 
 @dataclass(kw_only=True)
 class getERA5_IDW_at_points(getERA5_area):
     latitude: list
     longitude: list
+    pointID: list
     radius: float = 1e5
 
     def __post_init__(self):
-        # Project points in UTM, buffer, get bounds in Lat/Lon for "area" query
-        self.points = gpd.GeoDataFrame(index = [i for i in range(len(self.latitude))], geometry=gpd.points_from_xy(x=self.longitude,y=self.latitude),crs='WGS1984')
-        self.UTM = self.points.estimate_utm_crs().to_epsg()
-        self.points = self.points.to_crs(f"EPSG:{self.UTM}")
-        self.area = self.points.dissolve().buffer(self.radius).to_crs(self.WGS).total_bounds
+        # Project points in UTM, buffer, get bounds in Lat/Lon for "area" query,
+        self.Points = gpd.GeoDataFrame(index = [id for id in self.pointID], geometry=gpd.points_from_xy(x=self.longitude,y=self.latitude),crs='WGS1984')
+        self.UTM = f"EPSG:{self.Points.estimate_utm_crs().to_epsg()}"
+        self.Points = self.Points.to_crs(self.UTM)
+        self.area = self.Points.dissolve().buffer(self.radius).to_crs(self.WGS).total_bounds
         # Reformat area expectation by api
-        self.area = [self.area[-1]]+self.area[0:3]
+        self.area = [round(float(self.area[-1]),3)]+[round(float(a),3) for a in self.area[0:3]]
         super().__post_init__()
-        breakpoint()
+        point_var = []
+        T0 = time.time()
+        for d, request in self.request.items():
+            point_var.append([])
+            T1 = time.time()
+            self.downloadSave(d,request)
+            print('Completed in :',time.time()-T1)
+            for dsname in os.listdir(self.tempnc):
+                dsname = os.path.join(self.tempnc,dsname)
+                ds = xr.open_dataset(dsname)
+                ds.rio.write_crs(self.WGS,inplace=True)
+                ds = ds.rio.reproject(self.UTM)
+                x,y=np.meshgrid(ds.x.values,ds.y.values)
+                x,y=x.flatten(),y.flatten()
+                timestamp = ds.valid_time.values
+                point_var[-1].append(
+                    pd.concat([pd.DataFrame(
+                    index=timestamp,
+                    columns=[f"{varName}_{id}" for id in self.Points.index],
+                    # For each variable, do IDW on all timesteps (masking for nan values)
+                    data=np.array([
+                        simple_idw(x,y,ds[varName].values[i].flatten(),self.Points.geometry.x,self.Points.geometry.y)
+                        for i in range(ds[varName].values.shape[0])]), 
+                    ) for varName in ds.data_vars],axis=1)
+                    )
+            point_var[-1] = pd.concat(point_var[-1],axis=1)
+            shutil.rmtree(self.tempnc)
+        print('Full time: ',time.time()-T0)
+        point_var = pd.concat(point_var)
+        if not os.path.isdir(self.outputFolder):
+            os.makedirs(self.outputFolder)
+        point_var.to_csv(os.path.join(self.outputFolder,'test.csv'))
+
