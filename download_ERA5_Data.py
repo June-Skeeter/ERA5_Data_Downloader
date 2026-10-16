@@ -382,13 +382,12 @@ class getERA5_area(session):
         "2m_temperature",
         "surface_pressure",
         "total_precipitation",
-        "surface_latent_heat_flux",
         "surface_net_solar_radiation",
         "surface_net_thermal_radiation",
         "surface_sensible_heat_flux",
+        "surface_latent_heat_flux",
         "surface_solar_radiation_downwards",
         "surface_thermal_radiation_downwards",
-        "precipitation_type",
         "snow_depth",
         "snowfall",
         "soil_temperature_level_1",
@@ -407,27 +406,26 @@ class getERA5_area(session):
         self.tempnc = os.path.join(os.path.split(__file__)[0],'tempData','ncFiles')
         super().__post_init__()
         self.request = {}
-        for d in pd.date_range(self.startDate,self.stopDate):
+        for d in pd.date_range(self.startDate,self.stopDate,freq='MS'):
 
             self.request[d] = {
                 "product_type": ["reanalysis"],
                 'variable':self.variables,
                 'year':[str(d.year)],
                 'month':[str(d.month).zfill(2)],
-                'day':[str(d.day).zfill(2)],
-                # "day": [
-                #     "01", "02", "03",
-                #     "04", "05", "06",
-                #     "07", "08", "09",
-                #     "10", "11", "12",
-                #     "13", "14", "15",
-                #     "16", "17", "18",
-                #     "19", "20", "21",
-                #     "22", "23", "24",
-                #     "25", "26", "27",
-                #     "28", "29", "30",
-                #     "31"
-                # ],
+                "day": [
+                    "01", "02", "03",
+                    "04", "05", "06",
+                    "07", "08", "09",
+                    "10", "11", "12",
+                    "13", "14", "15",
+                    "16", "17", "18",
+                    "19", "20", "21",
+                    "22", "23", "24",
+                    "25", "26", "27",
+                    "28", "29", "30",
+                    "31"
+                ],
                 "time": [
                     "00:00", "01:00", "02:00",
                     "03:00", "04:00", "05:00",
@@ -501,6 +499,7 @@ class getERA5_IDW_at_points(getERA5_area):
         # Reformat area expectation by api
         self.area = [round(float(self.area[-1]),3)]+[round(float(a),3) for a in self.area[0:3]]
         super().__post_init__()
+        breakpoint()
         point_var = []
         T0 = time.time()
         for d, request in self.request.items():
