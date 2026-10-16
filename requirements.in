@@ -8,3 +8,6 @@ h5netcdf
 h5py
 pandas
 matplotlib
+rasterio
+rioxarray
+geopandas
