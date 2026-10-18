@@ -5,6 +5,7 @@ import xarray as xr
 import pandas as pd
 import numpy as np
 import rioxarray
+import datetime
 import cdsapi
 import shutil
 import uuid
@@ -371,6 +372,7 @@ class session():
 @dataclass(kw_only=True)
 class getERA5_atPoint(session):
     dataPath: str = None
+    name: str = None
     latitude: float
     longitude: float
     startDate: str
@@ -405,10 +407,12 @@ class getERA5_atPoint(session):
             ds = xr.open_dataset(os.path.join(tmp,f))
             ts = ds.to_dataframe()
             # Only runs for one point at a time, so this is fine
-            xy = ts.groupby(['latitude','longitude']).count().index.values[0]
+            if self.name is None:
+                xy = ts.groupby(['latitude','longitude']).count().index.values[0]
+                self.name = f"{xy[0]},{xy[1]}"
             ts = ts[[v for v in ds.data_vars]].copy()
             ts.columns = pd.MultiIndex.from_tuples([
-                (f"{xy[0]},{xy[1]}",varName,ds[varName].units,str(ds['t2m'].dtype),ds[varName].long_name)
+                (self.name,varName,ds[varName].units,str(ds['t2m'].dtype),ds[varName].long_name)
                 for varName in ds.data_vars
             ])
             self.time_series.append(ts)
@@ -451,6 +455,7 @@ class getERA5_area(session):
         super().__post_init__()
         # self.request = {}
         for d in pd.date_range(self.startDate,self.stopDate,freq='MS'):
+            if d > datetime.datetime.now(): continue
             request = {
                 "product_type": ["reanalysis"],
                 'variable':self.variables,
@@ -522,6 +527,7 @@ class getERA5_IDW_at_points(getERA5_area):
     latitude: list
     longitude: list
     pointID: list
+    area: list = None #[ymax,xmin,ymin,xmax] < copernicus request format
     radius: float = 1e5
 
     def __post_init__(self):
@@ -529,9 +535,16 @@ class getERA5_IDW_at_points(getERA5_area):
         self.Points = gpd.GeoDataFrame(index = [id for id in self.pointID], geometry=gpd.points_from_xy(x=self.longitude,y=self.latitude),crs='WGS1984')
         self.UTM = f"EPSG:{self.Points.estimate_utm_crs().to_epsg()}"
         self.Points = self.Points.to_crs(self.UTM)
-        self.area = self.Points.dissolve().buffer(self.radius).to_crs(self.WGS).total_bounds
+        pointBox = self.Points.dissolve().buffer(self.radius).to_crs(self.WGS).total_bounds
         # Reformat area expectation by api
-        self.area = [round(float(self.area[-1]),3)]+[round(float(a),3) for a in self.area[0:3]]
+        pointBox = [round(float(pointBox[-1]),3)]+[round(float(a),3) for a in pointBox[0:3]]
+        if self.area is None:
+            self.area = pointBox
+        else:
+            pointBox = [max(self.area[0],pointBox[0]),min(self.area[1],pointBox[1]),min(self.area[2],pointBox[2]),max(self.area[3],pointBox[3])]
+            if pointBox != self.area:
+                print('Point buffer has larger bbox that area provided, overwriting area to point buffer')
+                self.area = pointBox
         super().__post_init__()
         point_var = []
         T0 = time.time()
