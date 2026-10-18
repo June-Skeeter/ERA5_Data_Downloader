@@ -14,7 +14,6 @@ import json
 import sys
 import os
 
-
 Available_Variables = {
     'reanalysis-era5-single-levels-timeseries': [
         "100m_u_component_of_wind",
@@ -312,7 +311,7 @@ class session():
     dataset: str
     variables: list
     data_format: str = 'netcdf'
-    longterm_Storage: str = None
+    dataPath: str = None
     logPath: str = field(default=None,init=False)
 
     def __post_init__(self):
@@ -320,17 +319,17 @@ class session():
         if not os.path.isdir(root):
             os.makedirs(root)
         self.tempzip = os.path.join(os.path.split(__file__)[0],'tempData','download.zip')
-        if self.longterm_Storage is None:
+        if self.dataPath is None:
             self.ncOut = os.path.join(os.path.split(__file__)[0],'tempData','request')
         else:
-            self.ncOut = os.path.join(self.longterm_Storage,'request')
+            self.ncOut = os.path.join(self.dataPath,'request')
 
-        if self.longterm_Storage is None:
+        if self.dataPath is None:
             input('Proceed without storing request?')
-        elif not os.path.isdir(self.longterm_Storage):
-            sys.exit(f'Path does not exist: {self.longterm_Storage}')
+        elif not os.path.isdir(self.dataPath):
+            sys.exit(f'Path does not exist: {self.dataPath}')
         else:
-            self.logPath = os.path.join(self.longterm_Storage,'request.log')
+            self.logPath = os.path.join(self.dataPath,'request.log')
             if os.path.isfile(self.logPath):
                 with open(self.logPath) as f:
                     self.log = json.load(f)
@@ -340,9 +339,9 @@ class session():
         badVar = [v for v in self.variables if v not in Available_Variables[self.dataset]]
         if len(badVar):
             sys.exit(f"Invalid variable selections for {self.dataset}: {badVar}")
-        if not os.path.isfile('cdsapi.rc'):
-            sys.exit('Provide API key')
-        with open('cdsapi.rc','r') as f:
+        if not os.path.isfile(os.path.join(os.path.split(__file__)[0],'cdsapi.rc')):
+            sys.exit(f'Save API key here: {os.path.join(os.path.split(__file__)[0],'cdsapi.rc')}')
+        with open(os.path.join(os.path.split(__file__)[0],'cdsapi.rc'),'r') as f:
             apikey = yaml.safe_load(f)
         self.client = cdsapi.Client(
             url=apikey['url'],
@@ -371,7 +370,7 @@ class session():
 
 @dataclass(kw_only=True)
 class getERA5_atPoint(session):
-    longterm_Storage: str = None
+    dataPath: str = None
     latitude: float
     longitude: float
     startDate: str
@@ -414,6 +413,7 @@ class getERA5_atPoint(session):
             ])
             self.time_series.append(ts)
         self.time_series = pd.concat(self.time_series).sort_index()
+        self.time_series.index = self.time_series.index.tz_localize('UTC')
 
 
 @dataclass(kw_only=True)
@@ -562,4 +562,5 @@ class getERA5_IDW_at_points(getERA5_area):
             point_var[-1] = pd.concat(point_var[-1],axis=1)
         print('Full time: ',time.time()-T0)
         self.time_series = pd.concat(point_var)
+        self.time_series.index = self.time_series.index.tz_localize('UTC')
 
